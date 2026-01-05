@@ -1,6 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from streamlit_mic_recorder import mic_recorder
 from gtts import gTTS
 import io
 
@@ -21,18 +20,15 @@ st.markdown("""
         background-color: #1a1a1a;
         color: #e0e0e0;
     }
-    /* 文字サイズ設定 */
     p, div, input, textarea, button { font-size: 1.0em !important; }
     
-    .stButton > button {
-        background-color: #4a4a4a;
-        color: white;
-        border-radius: 5px;
-        padding: 10px 24px;
-        font-weight: bold;
-        width: 100%;
+    /* 公式マイクボタンの調整 */
+    .stAudioInput > div > button {
+        background-color: #8c2f2f !important;
+        color: white !important;
+        border: none;
     }
-    .stButton > button:hover { background-color: #8c2f2f; color: white; }
+
     .user-msg {
         text-align: right;
         color: #a0a0a0;
@@ -55,19 +51,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- サイドバー：工具箱（設定） ---
+# --- 秘密の鍵を取り出す（裏口入学） ---
+# Streamlitの金庫(Secrets)に鍵があればそれを使う。なければサイドバーを表示（開発用）
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    has_valid_key = True
+else:
+    with st.sidebar:
+        st.markdown("### 🔧 鉄の工具箱")
+        api_key = st.text_input("Gemini API Key", type="password")
+        has_valid_key = bool(api_key)
+
+# --- サイドバー設定 ---
 with st.sidebar:
-    st.markdown("### 🔧 鉄の工具箱")
-    api_key = st.text_input("Gemini API Key", type="password")
+    if "GEMINI_API_KEY" in st.secrets:
+        st.success("認証済み：師匠は準備万端だ。")
     
     st.divider()
-    
-    # ★ここが新機能：速度切り替えスイッチ★
     st.markdown("### 🔊 音声設定")
     speed_setting = st.radio(
         "読み上げ速度",
         ("🐢 ゆっくり（高齢者向）", "🐇 普通（サクサク）"),
-        index=0 # 初期値は「ゆっくり」
+        index=0
     )
 
 # --- 魂：システムプロンプト ---
@@ -91,7 +96,7 @@ if "messages" not in st.session_state:
 
 # --- 画面構成 ---
 st.markdown("<h1 style='text-align: center; color: #8c2f2f;'>雷親父の道場</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; opacity: 0.8;'>マイクボタンを押して、腹の底から喋れ。</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; opacity: 0.8;'>下のマイクボタンを押して喋り、送信せよ。</p>", unsafe_allow_html=True)
 st.divider()
 
 # --- 履歴表示 ---
@@ -103,15 +108,13 @@ for msg in st.session_state.messages:
         if "audio" in msg:
             st.audio(msg["audio"], format="audio/mp3")
 
-# --- 入力エリア ---
+# --- 入力エリア（新・公式マイク） ---
 st.write("### 🗣️ 声で相談する")
-c1, c2 = st.columns([1, 3])
 
-with c1:
-    audio = mic_recorder(start_prompt="🎙️ 録音開始", stop_prompt="⏹️ 完了", just_once=True, key='recorder')
-with c2:
-    st.info("左のボタンを押して話し、もう一度押すと送信されるぞ。")
+# ここが新しい公式マイクパーツ！スマホに強い！
+audio_input = st.audio_input("録音ボタン")
 
+# テキスト入力（予備）
 with st.expander("筆談（キーボード）で挑む"):
     with st.form(key="text_form", clear_on_submit=True):
         text_input = st.text_area("相談内容", height=70)
@@ -121,16 +124,17 @@ with st.expander("筆談（キーボード）で挑む"):
 input_content = None
 is_audio = False
 
-if audio:
-    input_content = audio['bytes']
+if audio_input:
+    # 公式マイクは録音完了後すぐにデータが入る
+    input_content = audio_input
     is_audio = True
 elif submit_btn and text_input:
     input_content = text_input
     is_audio = False
 
 if input_content:
-    if not api_key:
-        st.error("おい、工具箱（サイドバー）にAPIキーが入ってねぇぞ！")
+    if not has_valid_key:
+        st.error("おい！鍵（APIキー）がねぇぞ！設定を確認しろ！")
     else:
         try:
             genai.configure(api_key=api_key)
@@ -138,9 +142,11 @@ if input_content:
             
             with st.spinner("師匠が腹に力を入れている……"):
                 if is_audio:
+                    # 公式マイクのデータを読み込む
+                    audio_bytes = input_content.read()
                     response = model.generate_content([
                         "以下の音声を文字起こしして、返答せよ。",
-                        {"mime_type": "audio/wav", "data": input_content}
+                        {"mime_type": "audio/wav", "data": audio_bytes}
                     ])
                 else:
                     response = model.generate_content(input_content)
@@ -157,15 +163,14 @@ if input_content:
 
                 if not is_audio: user_voice_text = text_input
 
-                # --- ★ここが新機能：速度切り替えロジック ---
-                # サイドバーで選んだ設定に合わせて、slowをTrue/False切り替え
+                # 音声合成
                 is_slow = True if speed_setting == "🐢 ゆっくり（高齢者向）" else False
-                
                 tts = gTTS(text=bot_reply_text, lang='ja', slow=is_slow)
-                audio_bytes = io.BytesIO()
-                tts.write_to_fp(audio_bytes)
-                audio_data = audio_bytes.getvalue()
+                audio_output = io.BytesIO()
+                tts.write_to_fp(audio_output)
+                audio_data = audio_output.getvalue()
 
+                # 履歴に追加
                 st.session_state.messages.append({"role": "user", "content": user_voice_text})
                 st.session_state.messages.append({"role": "assistant", "content": bot_reply_text, "audio": audio_data})
                 
